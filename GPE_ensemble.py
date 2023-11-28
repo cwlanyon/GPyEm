@@ -22,6 +22,12 @@ class ensemble():
         dataStd = np.std(data,axis=0)
         dataNorm = (data-dataMean)/(dataStd)
         return dataNorm,dataMean,dataStd
+    
+    def normalise_test_data(self,input_data,output_data):
+        
+        inputNorm = (input_data-self.training_input_mean)/(self.training_input_STD)
+        outputNorm = (output_data-self.training_output_mean)/(self.training_output_STD)
+        return inputNorm,outputNorm
 
     def create_ensemble(self):
         modelInput = self.training_input_normalised
@@ -31,7 +37,7 @@ class ensemble():
         models = []
         likelihoods = []
         nMod = modelOutput.shape[1]
-        nDim = modelOutput.shape[1]
+        #nDim = modelOutput.shape[1]
         X=torch.tensor(modelInput.values).float()
 
         for i in range(nMod):
@@ -93,16 +99,57 @@ class ensemble():
             prediction.append(out)
         prediction=torch.stack(prediction).T
         return prediction
+    
+    def predict_sample(self,inputVals,n):
+
+        models=self.models
+        likelihoods=self.likelihoods
+        outMean=self.training_output_mean
+        outStd=self.training_output_STD
+
+        #modelOutput = (modelOutputOrig-outMean)/outStd.T
+        nMod = len(models)
+        prediction=[]
+        inputVals = torch.tensor(((inputVals-self.training_input_mean)/self.training_input_STD).values).float()
+        for i in range(nMod):
+            models[i].eval()
+            likelihoods[i].eval()
+            y_preds = likelihoods[i](models[i](inputVals))
+            y_samples = y_preds.sample(sample_shape=torch.Size([n],))
+            out = outStd[i]*(y_samples)+outMean[i]
+            prediction.append(out)
+        prediction=torch.stack(prediction).T
+        return prediction
 
     def MSE(self,inputVals,outputVals):
         
         outputVals = torch.tensor(outputVals.values)
         MSE_score = ((self.predict(inputVals)-outputVals)**2).mean(axis=0)
         return MSE_score
+    
+    def MSE_sample(self,inputVals,outputVals,n=5):
+        MSE_score=[]
+        outputVals = torch.tensor(outputVals.values)
+        pred = self.predict_sample(inputVals,n)
+        for i in range(n):
+            MSE_score.append(((pred[:,i,:]-outputVals)**2).mean(axis=0).detach().numpy())
+     
+        MSE_mean = torch.tensor(np.array(MSE_score).mean(axis=0))
+        MSE_std = torch.tensor(np.array(MSE_score).std(axis=0))
+        return MSE_mean, MSE_std
 
     def R2(self,inputVals,outputVals):
         R2_score=1-self.MSE(inputVals,outputVals)/torch.tensor(np.var(outputVals,axis=0))
         return R2_score
+    
+    def R2_sample(self,inputVals,outputVals,n=5):
+        R2_score=[]
+        pred = self.predict_sample(inputVals,n).detach().numpy()
+        for i in range(n):
+            R2_score.append(1-((pred[:,i,:]-outputVals)**2).mean(axis=0)/np.var(outputVals,axis=0))             
+        R2_mean = torch.tensor(np.array(R2_score).mean(axis=0))
+        R2_std = torch.tensor(np.array(R2_score).std(axis=0))
+        return R2_mean, R2_std
     
     def ISE(self,inputVals,outputVals):
         pred=self.predict(inputVals)
@@ -110,5 +157,17 @@ class ensemble():
         pSTD=pred.std(axis=0)
         ISE_score = (100*sum(torch.FloatTensor.abs_(pMean-torch.tensor(outputVals.values))<2*pSTD)/inputVals.shape[0])
         return ISE_score
-                   
+    
+    def ensemble_likelihood(self,candidateInput,outputVal):
+        nMod = self.training_output_normalised.shape[1]
+        models=self.models
+        likelihoods=self.likelihoods
+        likelihood_eval = np.zeros(nMod)
+        inputNorm,outputNorm = self.normalise_test_data(candidateInput,outputVal)
+        for i in range(nMod):
+            models[i].eval()
+            likelihoods[i].eval()
+            mll = gpytorch.mlls.ExactMarginalLogLikelihood(likelihoods[i], models[i])
+            likelihood_eval[i] = np.exp(mll(models[i](torch.tensor(inputNorm.values).float()),torch.tensor(outputNorm.iloc[:,i].values).float()).detach().numpy())
+        return likelihood_eval         
             
