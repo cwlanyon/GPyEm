@@ -6,7 +6,7 @@ import os
 from gpytorch.likelihoods import GaussianLikelihood
     
 class ensemble():
-    def __init__(self,X_train,y_train,mean_func='constant',training_iter=1000):
+    def __init__(self,X_train,y_train,mean_func='constant',training_iter=1000,restarts=0,X_val=np.array([]),y_val=np.array([])):
 
 
         self.training_input = X_train
@@ -15,7 +15,16 @@ class ensemble():
         self.training_input_normalised, self.training_input_mean, self.training_input_STD = self.normalise(X_train)
         self.training_output_normalised, self.training_output_mean, self.training_output_STD = self.normalise(y_train)
         self.training_iter=training_iter
-        self.models, self.likelihoods = self.create_ensemble()
+        
+        self.X_val=X_val
+        self.y_val=y_val
+        
+        
+        if restarts == 0:
+            self.models, self.likelihoods = self.create_ensemble()
+        elif restarts >0:
+            self.models,self.likelihoods=self.create_ensemble_restart()
+        
         
     def normalise(self,data):
         dataMean = np.mean(data,axis=0)
@@ -33,6 +42,62 @@ class ensemble():
         modelInput = self.training_input_normalised
         modelOutput = self.training_output_normalised
         meanFunc = self.mean_func
+
+        models = []
+        likelihoods = []
+        nMod = modelOutput.shape[1]
+        #nDim = modelOutput.shape[1]
+        X=torch.tensor(modelInput.values).float()
+
+        for i in range(nMod):
+            Y=torch.tensor(modelOutput.iloc[:,i].values).squeeze().float() 
+            print(i)
+            likelihoods.append(gpytorch.likelihoods.GaussianLikelihood())
+            if meanFunc=='constant':
+                models.append(GPF.ExactGPModel(X, Y, likelihoods[i]))
+            if meanFunc=='linear':
+                models.append(GPF.ExactLRGPModel(X, Y, likelihoods[i]))
+            if meanFunc=='zero':
+                models.append(GPF.ZeroMeanGPModel(X, Y, likelihoods[i]))
+            smoke_test = ('CI' in os.environ)
+            training_iter = 2 if smoke_test else self.training_iter
+
+            # Find optimal model hyperparameters
+            models[i].train()
+            likelihoods[i].train()
+
+
+            # Use the adam optimizer
+            optimizer = torch.optim.Adam(models[i] .parameters(), lr=0.1)  # Includes GaussianLikelihood parameters
+
+            # "Loss" for GPs - the marginal log likelihood
+            mll = gpytorch.mlls.ExactMarginalLogLikelihood(likelihoods[i], models[i] )
+
+
+            for j in range(training_iter):
+                # Zero gradients from previous iteration
+                optimizer.zero_grad()
+                # Output from model
+                output = models[i](X)
+                # Calc loss and backprop gradients
+                loss = -mll(output, Y)
+                loss.backward()
+                #print('Iter %d/%d - Loss: %.3f   lengthscale: %.3f   noise: %.3f' % (
+                #    j + 1, training_iter, loss.item(),
+                #    models[i].covar_module.base_kernel.lengthscale.item(),
+                #    models[i].likelihood.noise.item()
+                #))
+                optimizer.step()
+        return models, likelihoods
+    
+    
+    def create_ensemble_restarts(self):
+        modelInput = self.training_input_normalised
+        modelOutput = self.training_output_normalised
+        meanFunc = self.mean_func
+        
+        X_val_norm,y_val_norm=self.normalise_test_data(self.X_val,self.y_val)
+        
 
         models = []
         likelihoods = []
@@ -169,5 +234,41 @@ class ensemble():
             likelihoods[i].eval()
             mll = gpytorch.mlls.ExactMarginalLogLikelihood(likelihoods[i], models[i])
             likelihood_eval[i] = np.exp(mll(models[i](torch.tensor(inputNorm.values).float()),torch.tensor(outputNorm.iloc[:,i].values).float()).detach().numpy())
-        return likelihood_eval         
+        return likelihood_eval 
+    
+    def ensemble_log_likelihood(self,candidateInput,outputVal):
+        nMod = self.training_output_normalised.shape[1]
+        models=self.models
+        likelihoods=self.likelihoods
+        likelihood_eval = np.zeros(nMod)
+        inputNorm,outputNorm = self.normalise_test_data(candidateInput,outputVal)
+        for i in range(nMod):
+            models[i].eval()
+            likelihoods[i].eval()
+            mll = gpytorch.mlls.ExactMarginalLogLikelihood(likelihoods[i], models[i])
+            likelihood_eval[i] = (mll(models[i](torch.tensor(inputNorm.values).float()),torch.tensor(outputNorm.iloc[:,i].values).float()).detach().numpy())
+        return likelihood_eval 
             
+    def ensemble_log_likelihood_obs_error(self,candidateInput,outputVal,sigma2):
+        nMod = self.training_output_normalised.shape[1]
+        nDim = self.training_output_normalised.shape[0]
+        models=self.models
+        likelihoods=self.likelihoods
+        models=self.models
+        likelihood_eval = np.zeros(nMod)
+        inputNorm,outputNorm = self.normalise_test_data(candidateInput,outputVal)
+        for i in range(nMod):
+            models[i].eval()
+            likelihoods[i].eval()
+            
+            m = likelihoods[i](models[i](torch.tensor(inputNorm.values).float())).mean.detach().numpy()
+            k = likelihoods[i](models[i](torch.tensor(inputNorm.values).float())).covariance_matrix.detach().numpy()
+            
+            likelihood_manual=-0.5*((torch.tensor(outputNorm.values).float()-m)**2)/(k+sigma2) - 0.5*nDim*np.log(2*np.pi)-0.5*nDim*np.log(k+sigma2)
+            
+            likelihood_eval[i] = likelihood_manual
+            print('covariance:',k)
+            print('likelihood:',likelihood_manual)
+          
+            
+        return likelihood_eval         
