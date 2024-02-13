@@ -252,23 +252,21 @@ class ensemble():
     def ensemble_log_likelihood_obs_error(self,candidateInput,outputVal,sigma2):
         nMod = self.training_output_normalised.shape[1]
         nDim = self.training_output_normalised.shape[0]
+        nP = candidateInput.shape[0]
         models=self.models
         likelihoods=self.likelihoods
         models=self.models
-        likelihood_eval = np.zeros(nMod)
+        likelihood_eval = np.zeros((nMod,nP))
         inputNorm,outputNorm = self.normalise_test_data(candidateInput,outputVal)
         for i in range(nMod):
             models[i].eval()
             likelihoods[i].eval()
             
             m = likelihoods[i](models[i](torch.tensor(inputNorm.values).float())).mean.detach().numpy()
-            k = likelihoods[i](models[i](torch.tensor(inputNorm.values).float())).covariance_matrix.detach().numpy()
+            k = likelihoods[i](models[i](torch.tensor(inputNorm.values).float())).covariance_matrix.diag().detach().numpy()
             
             likelihood_manual=-0.5*((torch.tensor(outputNorm.values).float()-m)**2)/(k+sigma2) - 0.5*nDim*np.log(2*np.pi)-0.5*nDim*np.log(k+sigma2)
-            
-            likelihood_eval[i] = likelihood_manual
-            print('covariance:',k)
-            print('likelihood:',likelihood_manual)
+            likelihood_eval[i,:] = likelihood_manual
           
             
         return likelihood_eval         
