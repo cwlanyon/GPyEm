@@ -4,9 +4,8 @@ import torch
 import gpytorch
 import os
 from gpytorch.likelihoods import GaussianLikelihood
-    
 class ensemble():
-    def __init__(self,X_train,y_train,mean_func='constant',training_iter=1000,restarts=0,X_val=np.array([]),y_val=np.array([])):
+    def __init__(self,X_train,y_train,mean_func='constant',training_iter=1000,restarts=0,X_val=torch.tensor([]),y_val=torch.tensor([])):
 
 
         self.training_input = X_train
@@ -27,8 +26,8 @@ class ensemble():
         
         
     def normalise(self,data):
-        dataMean = np.mean(data,axis=0)
-        dataStd = np.std(data,axis=0)
+        dataMean = data.mean(axis=0)
+        dataStd = data.std(axis=0)
         dataNorm = (data-dataMean)/(dataStd)
         return dataNorm,dataMean,dataStd
     
@@ -47,10 +46,10 @@ class ensemble():
         likelihoods = []
         nMod = modelOutput.shape[1]
         #nDim = modelOutput.shape[1]
-        X=torch.tensor(modelInput.values).float()
+        X=modelInput.float()
 
         for i in range(nMod):
-            Y=torch.tensor(modelOutput.iloc[:,i].values).squeeze().float() 
+            Y=modelOutput[:,i].float()
             print(i)
             likelihoods.append(gpytorch.likelihoods.GaussianLikelihood())
             if meanFunc=='constant':
@@ -156,7 +155,7 @@ class ensemble():
         #modelOutput = (modelOutputOrig-outMean)/outStd.T
         nMod = len(models)
         prediction=[]
-        inputVals = torch.tensor(((inputVals-self.training_input_mean)/self.training_input_STD).values).float()
+        inputVals = ((inputVals-self.training_input_mean)/self.training_input_STD).float()
         for i in range(nMod):
             models[i].eval()
             likelihoods[i].eval()
@@ -175,7 +174,7 @@ class ensemble():
         #modelOutput = (modelOutputOrig-outMean)/outStd.T
         nMod = len(models)
         prediction=[]
-        inputVals = torch.tensor(((inputVals-self.training_input_mean)/self.training_input_STD).values).float()
+        inputVals = ((inputVals-self.training_input_mean)/self.training_input_STD)
         for i in range(nMod):
             models[i].eval()
             likelihoods[i].eval()
@@ -188,30 +187,30 @@ class ensemble():
 
     def MSE(self,inputVals,outputVals):
         
-        outputVals = torch.tensor(outputVals.values)
+        outputVals = outputVals
         MSE_score = ((self.predict(inputVals)-outputVals)**2).mean(axis=0)
         return MSE_score
     
     def MSE_sample(self,inputVals,outputVals,n=5):
         MSE_score=[]
-        outputVals = torch.tensor(outputVals.values)
+        outputVals = outputVals
         pred = self.predict_sample(inputVals,n)
         for i in range(n):
-            MSE_score.append(((pred[:,i,:]-outputVals)**2).mean(axis=0).detach().numpy())
+            MSE_score.append(((pred[:,i,:]-outputVals)**2).mean(axis=0))
      
-        MSE_mean = torch.tensor(np.array(MSE_score).mean(axis=0))
-        MSE_std = torch.tensor(np.array(MSE_score).std(axis=0))
+        MSE_mean = torch.tensor(MSE_score.mean(axis=0))
+        MSE_std = torch.tensor(MSE_score.std(axis=0))
         return MSE_mean, MSE_std
 
     def R2(self,inputVals,outputVals):
-        R2_score=1-self.MSE(inputVals,outputVals)/torch.tensor(np.var(outputVals,axis=0))
+        R2_score=1-self.MSE(inputVals,outputVals)/torch.tensor(torch.var(outputVals,axis=0))
         return R2_score
     
     def R2_sample(self,inputVals,outputVals,n=5):
         R2_score=[]
-        pred = self.predict_sample(inputVals,n).detach().numpy()
+        pred = self.predict_sample(inputVals,n)
         for i in range(n):
-            R2_score.append(1-((pred[:,i,:]-outputVals)**2).mean(axis=0)/np.var(outputVals,axis=0))             
+            R2_score.append(1-((pred[:,i,:]-outputVals)**2).mean(axis=0)/torch.var(outputVals,axis=0))             
         R2_mean = torch.tensor(np.array(R2_score).mean(axis=0))
         R2_std = torch.tensor(np.array(R2_score).std(axis=0))
         return R2_mean, R2_std
@@ -220,7 +219,7 @@ class ensemble():
         pred=self.predict(inputVals)
         pMean=pred.mean(axis=0)
         pSTD=pred.std(axis=0)
-        ISE_score = (100*sum(torch.FloatTensor.abs_(pMean-torch.tensor(outputVals.values))<2*pSTD)/inputVals.shape[0])
+        ISE_score = (100*sum(torch.FloatTensor.abs_(pMean-outputVals)<2*pSTD)/inputVals.shape[0])
         return ISE_score
     
     def ensemble_likelihood(self,candidateInput,outputVal):
@@ -240,15 +239,41 @@ class ensemble():
         nMod = self.training_output_normalised.shape[1]
         models=self.models
         likelihoods=self.likelihoods
-        likelihood_eval = np.zeros(nMod)
+        likelihood_eval = torch.zeros(nMod)
         inputNorm,outputNorm = self.normalise_test_data(candidateInput,outputVal)
         for i in range(nMod):
             models[i].eval()
             likelihoods[i].eval()
             mll = gpytorch.mlls.ExactMarginalLogLikelihood(likelihoods[i], models[i])
-            likelihood_eval[i] = (mll(models[i](torch.tensor(inputNorm.values).float()),torch.tensor(outputNorm.iloc[:,i].values).float()).detach().numpy())
+            likelihood_eval[i] = mll(models[i](torch.tensor(inputNorm.values).float(),torch.tensor(outputNorm.iloc[:,i].values).float()))
         return likelihood_eval 
             
+    def ensemble_log_likelihood_obs_error2(self,candidateInput,outputVal,sigma2):
+        nMod = self.training_output_normalised.shape[1]
+        nDim = self.training_output_normalised.shape[0]
+        nP = candidateInput.shape[0]
+        models=self.models
+        likelihoods=self.likelihoods
+        models=self.models
+        likelihood_eval = torch.zeros((nMod,nP))
+        inputNorm,outputNorm = self.normalise_test_data(candidateInput,outputVal)
+        inputNorm=inputNorm.float()
+        outputNorm=outputNorm.float()
+        
+        
+        for i in range(nMod):
+            models[i].eval()
+            likelihoods[i].eval()
+            sigma = sigma2/self.training_output_STD[i]
+            m = likelihoods[i](models[i](inputNorm)).mean
+            k = likelihoods[i](models[i](inputNorm)).covariance_matrix.diag()
+            
+            likelihood_manual=-0.5*((outputNorm[:,i]-m)**2)/(k+sigma) -0.5*nDim*torch.log(k+sigma) #- 0.5*nDim*torch.log(torch.tensor(2*torch.pi))
+            likelihood_eval[i,:] = likelihood_manual
+          
+            
+        return likelihood_eval
+    
     def ensemble_log_likelihood_obs_error(self,candidateInput,outputVal,sigma2):
         nMod = self.training_output_normalised.shape[1]
         nDim = self.training_output_normalised.shape[0]
@@ -256,17 +281,21 @@ class ensemble():
         models=self.models
         likelihoods=self.likelihoods
         models=self.models
-        likelihood_eval = np.zeros((nMod,nP))
+        likelihood_eval = torch.zeros((nMod,nP))
         inputNorm,outputNorm = self.normalise_test_data(candidateInput,outputVal)
+        inputNorm=inputNorm.float()
+        outputNorm=outputNorm.float()
+        
+        
         for i in range(nMod):
             models[i].eval()
             likelihoods[i].eval()
+            sigma = sigma2[i]
+            m = likelihoods[i](models[i](inputNorm)).mean
+            k = likelihoods[i](models[i](inputNorm)).covariance_matrix.diag()
             
-            m = likelihoods[i](models[i](torch.tensor(inputNorm.values).float())).mean.detach().numpy()
-            k = likelihoods[i](models[i](torch.tensor(inputNorm.values).float())).covariance_matrix.diag().detach().numpy()
-            
-            likelihood_manual=-0.5*((torch.tensor(outputNorm.values).float()-m)**2)/(k+sigma2) - 0.5*nDim*np.log(2*np.pi)-0.5*nDim*np.log(k+sigma2)
+            likelihood_manual=-0.5*((outputVal[:,i]-(self.training_output_STD[i]*m+self.training_output_mean[i]))**2)/(self.training_output_STD[i]*k+sigma) -0.5*nDim*torch.log(self.training_output_STD[i]*k+sigma) #- 0.5*nDim*torch.log(torch.tensor(2*torch.pi))
             likelihood_eval[i,:] = likelihood_manual
           
             
-        return likelihood_eval         
+        return likelihood_eval    
