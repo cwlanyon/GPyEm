@@ -248,7 +248,7 @@ class ensemble():
             likelihood_eval[i] = mll(models[i](torch.tensor(inputNorm.values).float(),torch.tensor(outputNorm.iloc[:,i].values).float()))
         return likelihood_eval 
             
-    def ensemble_log_likelihood_obs_error2(self,candidateInput,outputVal,sigma2):
+    def ensemble_log_likelihood_obs_error2(self,candidateInput,outputVal,sigma2): #NOT IN USE
         nMod = self.training_output_normalised.shape[1]
         nDim = self.training_output_normalised.shape[0]
         nP = candidateInput.shape[0]
@@ -294,8 +294,17 @@ class ensemble():
             m = likelihoods[i](models[i](inputNorm)).mean
             k = likelihoods[i](models[i](inputNorm)).covariance_matrix.diag()
             
-            likelihood_manual=-0.5*((outputVal[:,i]-(self.training_output_STD[i]*m+self.training_output_mean[i]))**2)/(self.training_output_STD[i]*k+sigma) -0.5*nDim*torch.log(self.training_output_STD[i]*k+sigma) #- 0.5*nDim*torch.log(torch.tensor(2*torch.pi))
+            mean = self.training_output_STD[i]*m+self.training_output_mean[i]
+            variance = (self.training_output_STD[i]**2)*k+sigma
+            
+            likelihood_manual=self.gaussian_ll(outputVal[:,i],mean,variance)
+            
+            #likelihood_manual=-0.5*((outputVal[:,i]-(self.training_output_STD[i]*m+self.training_output_mean[i]))**2)/((self.training_output_STD[i]**2)*k+sigma) -0.5*torch.log((self.training_output_STD[i]**2)*k+sigma) - 0.5*torch.log(torch.tensor(2*torch.pi))
             likelihood_eval[i,:] = likelihood_manual
           
             
         return likelihood_eval    
+    
+    def gaussian_ll(self,y,mean,variance):
+        ll = -0.5*((y-mean)**2)/variance - 0.5*torch.log(variance) - 0.5*torch.log(torch.tensor(2*torch.pi))
+        return ll
