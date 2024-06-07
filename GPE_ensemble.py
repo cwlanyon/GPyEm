@@ -5,7 +5,7 @@ import gpytorch
 import os
 from gpytorch.likelihoods import GaussianLikelihood
 class ensemble():
-    def __init__(self,X_train,y_train,mean_func='constant',training_iter=1000,restarts=0,X_val=torch.tensor([]),y_val=torch.tensor([])):
+    def __init__(self,X_train,y_train,mean_func='constant',training_iter=1000,ref_emulator=None,a=None,restarts=0):
 
 
         self.training_input = X_train
@@ -14,11 +14,8 @@ class ensemble():
         self.training_input_normalised, self.training_input_mean, self.training_input_STD = self.normalise(X_train)
         self.training_output_normalised, self.training_output_mean, self.training_output_STD = self.normalise(y_train)
         self.training_iter=training_iter
-        
-        self.X_val=X_val
-        self.y_val=y_val
-        
-        
+        self.ref_emulator=ref_emulator
+        self.a=a
         if restarts == 0:
             self.models, self.likelihoods = self.create_ensemble()
         elif restarts >0:
@@ -47,17 +44,21 @@ class ensemble():
         nMod = modelOutput.shape[1]
         #nDim = modelOutput.shape[1]
         X=modelInput.float()
-
+        
+        #noise_prior=gpytorch.priors.SmoothedBoxPrior(0.15, 1.5, sigma=0.001))
+        
         for i in range(nMod):
             Y=modelOutput[:,i].float()
             print(i)
-            likelihoods.append(gpytorch.likelihoods.GaussianLikelihood())
+            likelihoods.append(gpytorch.likelihoods.GaussianLikelihood(noise_prior=gpytorch.priors.SmoothedBoxPrior(0.15, 1.5, sigma=1)))
             if meanFunc=='constant':
                 models.append(GPF.ExactGPModel(X, Y, likelihoods[i]))
             if meanFunc=='linear':
                 models.append(GPF.ExactLRGPModel(X, Y, likelihoods[i]))
             if meanFunc=='zero':
                 models.append(GPF.ZeroMeanGPModel(X, Y, likelihoods[i]))
+            if meanFunc=='discrepancy':
+                models.append(GPF.DiscrepancyGPModel(X, Y, likelihoods[i],self.ref_emulator.models[i],self.a[i]))
             smoke_test = ('CI' in os.environ)
             training_iter = 2 if smoke_test else self.training_iter
 
@@ -81,11 +82,9 @@ class ensemble():
                 # Calc loss and backprop gradients
                 loss = -mll(output, Y)
                 loss.backward()
-                #print('Iter %d/%d - Loss: %.3f   lengthscale: %.3f   noise: %.3f' % (
-                #    j + 1, training_iter, loss.item(),
-                #    models[i].covar_module.base_kernel.lengthscale.item(),
-                #    models[i].likelihood.noise.item()
-                #))
+                print('Iter %d/%d - Loss: %.3f' % (
+                    j + 1, training_iter, loss.item()
+                ))
                 optimizer.step()
         return models, likelihoods
     
@@ -207,12 +206,12 @@ class ensemble():
         return R2_score
     
     def R2_sample(self,inputVals,outputVals,n=5):
-        R2_score=[]
+        R2_score=torch.zeros(n,outputVals.shape[1])
         pred = self.predict_sample(inputVals,n)
         for i in range(n):
-            R2_score.append(1-((pred[:,i,:]-outputVals)**2).mean(axis=0)/torch.var(outputVals,axis=0))             
-        R2_mean = torch.tensor(np.array(R2_score).mean(axis=0))
-        R2_std = torch.tensor(np.array(R2_score).std(axis=0))
+            R2_score[i,:]=(1-((pred[:,i,:]-outputVals)**2).mean(axis=0)/torch.var(outputVals,axis=0))             
+        R2_mean = torch.tensor(R2_score.mean(axis=0))
+        R2_std = torch.tensor(R2_score.std(axis=0))
         return R2_mean, R2_std
     
     def ISE(self,inputVals,outputVals):
