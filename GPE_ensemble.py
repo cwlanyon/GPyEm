@@ -5,7 +5,7 @@ import gpytorch
 import os
 from gpytorch.likelihoods import GaussianLikelihood
 class ensemble():
-    def __init__(self,X_train,y_train,mean_func='constant',training_iter=1000,ref_emulator=None,a=None,restarts=0):
+    def __init__(self,X_train,y_train,mean_func='constant',training_iter=1000,kernel='RBF',kernel_params=None,ref_emulator=None,a=None,a_indicator=False):
 
 
         self.training_input = X_train
@@ -16,10 +16,11 @@ class ensemble():
         self.training_iter=training_iter
         self.ref_emulator=ref_emulator
         self.a=a
-        if restarts == 0:
-            self.models, self.likelihoods = self.create_ensemble()
-        elif restarts >0:
-            self.models,self.likelihoods=self.create_ensemble_restart()
+        self.a_indicator=a_indicator
+        self.kernel=kernel
+        self.kernel_params=kernel_params
+        self.models, self.likelihoods = self.create_ensemble()
+
         
         
     def normalise(self,data):
@@ -33,6 +34,16 @@ class ensemble():
         inputNorm = (input_data-self.training_input_mean)/(self.training_input_STD)
         outputNorm = (output_data-self.training_output_mean)/(self.training_output_STD)
         return inputNorm,outputNorm
+    
+    def normalise_output(self,output_data):
+        
+        outputNorm = (output_data-self.training_output_mean)/(self.training_output_STD)
+        return outputNorm
+    
+    def normalise_input(self,input_data):
+        
+        inputNorm = (input_data-self.training_input_mean)/(self.training_input_STD)
+        return inputNorm
 
     def create_ensemble(self):
         modelInput = self.training_input_normalised
@@ -50,15 +61,28 @@ class ensemble():
         for i in range(nMod):
             Y=modelOutput[:,i].float()
             print(i)
-            likelihoods.append(gpytorch.likelihoods.GaussianLikelihood(noise_prior=gpytorch.priors.SmoothedBoxPrior(0.15, 1.5, sigma=1)))
-            if meanFunc=='constant':
-                models.append(GPF.ExactGPModel(X, Y, likelihoods[i]))
-            if meanFunc=='linear':
-                models.append(GPF.ExactLRGPModel(X, Y, likelihoods[i]))
-            if meanFunc=='zero':
-                models.append(GPF.ZeroMeanGPModel(X, Y, likelihoods[i]))
-            if meanFunc=='discrepancy':
-                models.append(GPF.DiscrepancyGPModel(X, Y, likelihoods[i],self.ref_emulator.models[i],self.a[i]))
+            likelihoods.append(gpytorch.likelihoods.GaussianLikelihood(noise_prior=gpytorch.priors.SmoothedBoxPrior(0.15, 1.5, sigma=0.1)))
+            
+            if self.ref_emulator == None:
+                models.append(GPF.ExactGPModel(X, Y, likelihoods[i],self.kernel,self.kernel_params,self.mean_func,None,None,None,False))
+            elif self.mean_func == 'discrepancy_cohort':
+                ref_models = []
+                ref_likelihoods = []
+                for k in range(len(self.ref_emulator)):
+                    ref_models.append(self.ref_emulator[k].models[i])
+                    ref_likelihoods.append(self.ref_emulator[k].likelihoods[i])
+                if self.a==None:
+                    models.append(GPF.ExactGPModel(X, Y, likelihoods[i],self.kernel,self.kernel_params,self.mean_func,ref_models,ref_likelihoods,None,False))
+
+                else:
+                    models.append(GPF.ExactGPModel(X, Y, likelihoods[i],self.kernel,self.kernel_params,self.mean_func,ref_models,ref_likelihoods,self.a[i,:],self.a_indicator))
+
+            elif self.a!=None:    
+                
+                models.append(GPF.ExactGPModel(X, Y, likelihoods[i],self.kernel,self.kernel_params,self.mean_func,self.ref_emulator.models[i],self.ref_emulator.likelihoods[i],self.a[i],self.a_indicator))
+            else:
+                models.append(GPF.ExactGPModel(X, Y, likelihoods[i],self.kernel,self.kernel_params,self.mean_func,self.ref_emulator.models[i],self.ref_emulator.likelihoods[i],None,False))
+
             smoke_test = ('CI' in os.environ)
             training_iter = 2 if smoke_test else self.training_iter
 
@@ -82,9 +106,9 @@ class ensemble():
                 # Calc loss and backprop gradients
                 loss = -mll(output, Y)
                 loss.backward()
-                print('Iter %d/%d - Loss: %.3f' % (
-                    j + 1, training_iter, loss.item()
-                ))
+                # print('Iter %d/%d - Loss: %.3f' % (
+                #     j + 1, training_iter, loss.item()
+                # ))
                 optimizer.step()
         return models, likelihoods
     
@@ -173,7 +197,7 @@ class ensemble():
         #modelOutput = (modelOutputOrig-outMean)/outStd.T
         nMod = len(models)
         prediction=[]
-        inputVals = ((inputVals-self.training_input_mean)/self.training_input_STD)
+        inputVals = ((inputVals-self.training_input_mean)/self.training_input_STD).float()
         for i in range(nMod):
             models[i].eval()
             likelihoods[i].eval()
@@ -191,18 +215,18 @@ class ensemble():
         return MSE_score
     
     def MSE_sample(self,inputVals,outputVals,n=5):
-        MSE_score=[]
+        MSE_score=torch.zeros(n,outputVals.shape[1])
         outputVals = outputVals
         pred = self.predict_sample(inputVals,n)
         for i in range(n):
-            MSE_score.append(((pred[:,i,:]-outputVals)**2).mean(axis=0))
+            MSE_score[i,:]=((pred[:,i,:]-outputVals)**2).mean(axis=0)
      
         MSE_mean = torch.tensor(MSE_score.mean(axis=0))
         MSE_std = torch.tensor(MSE_score.std(axis=0))
         return MSE_mean, MSE_std
 
     def R2(self,inputVals,outputVals):
-        R2_score=1-self.MSE(inputVals,outputVals)/torch.tensor(torch.var(outputVals,axis=0))
+        R2_score=1-self.MSE(inputVals,outputVals)/torch.var(outputVals,axis=0)
         return R2_score
     
     def R2_sample(self,inputVals,outputVals,n=5):
@@ -289,15 +313,70 @@ class ensemble():
         for i in range(nMod):
             models[i].eval()
             likelihoods[i].eval()
-            sigma = sigma2[i]
+            sigma_2 = sigma2[i]
             m = likelihoods[i](models[i](inputNorm)).mean
-            k = likelihoods[i](models[i](inputNorm)).covariance_matrix.diag()
+            k = likelihoods[i](models[i](inputNorm)).variance
             
             mean = self.training_output_STD[i]*m+self.training_output_mean[i]
-            variance = (self.training_output_STD[i]**2)*k+sigma
-            
+            variance = (self.training_output_STD[i]**2)*k+sigma_2
+
             likelihood_manual=self.gaussian_ll(outputVal[:,i],mean,variance)
+
+            #likelihood_manual=-0.5*((outputVal[:,i]-(self.training_output_STD[i]*m+self.training_output_mean[i]))**2)/((self.training_output_STD[i]**2)*k+sigma) -0.5*torch.log((self.training_output_STD[i]**2)*k+sigma) - 0.5*torch.log(torch.tensor(2*torch.pi))
+            likelihood_eval[i,:] = likelihood_manual
+          
             
+        return likelihood_eval 
+    
+    
+    def generate_variance(self,candidateInput):
+        nMod = self.training_output_normalised.shape[1]
+        nDim = self.training_output_normalised.shape[0]
+        nP = candidateInput.shape[0]
+        models=self.models
+        likelihoods=self.likelihoods
+        var = torch.zeros((nMod,nP))
+        inputNorm,outputNorm = self.normalise_test_data(candidateInput,1)
+        inputNorm=inputNorm.float()
+        outputNorm=outputNorm.float()
+        
+        
+        for i in range(nMod):
+            models[i].eval()
+            likelihoods[i].eval()
+            k = likelihoods[i](models[i](inputNorm)).variance
+            variance = (self.training_output_STD[i]**2)*k
+            
+            var[i,:] = variance
+          
+            
+        return var
+   
+    
+    def ensemble_log_likelihood_obs_error_no_U(self,candidateInput,outputVal,sigma2):
+        nMod = self.training_output_normalised.shape[1]
+        nDim = self.training_output_normalised.shape[0]
+        nP = candidateInput.shape[0]
+        models=self.models
+        likelihoods=self.likelihoods
+        models=self.models
+        likelihood_eval = torch.zeros((nMod,nP))
+        inputNorm,outputNorm = self.normalise_test_data(candidateInput,outputVal)
+        inputNorm=inputNorm.float()
+        outputNorm=outputNorm.float()
+        
+        
+        for i in range(nMod):
+            models[i].eval()
+            likelihoods[i].eval()
+            sigma_2 = sigma2[i]
+            m = likelihoods[i](models[i](inputNorm)).mean
+            
+            mean = self.training_output_STD[i]*m+self.training_output_mean[i]
+            variance = sigma_2
+
+            likelihood_manual=self.gaussian_ll(outputVal[:,i],mean,variance)
+
             #likelihood_manual=-0.5*((outputVal[:,i]-(self.training_output_STD[i]*m+self.training_output_mean[i]))**2)/((self.training_output_STD[i]**2)*k+sigma) -0.5*torch.log((self.training_output_STD[i]**2)*k+sigma) - 0.5*torch.log(torch.tensor(2*torch.pi))
             likelihood_eval[i,:] = likelihood_manual
           
