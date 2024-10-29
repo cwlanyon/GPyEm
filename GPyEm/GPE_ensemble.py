@@ -1,5 +1,5 @@
 import numpy as np
-import GP_functions as GPF
+from GPyEm import GP_functions as GPF
 import torch
 import gpytorch
 import os
