@@ -1,9 +1,0 @@
-Metadata-Version: 2.1
-Name: GPyEm
-Version: 1.0
-Summary: A wrapper for GPyTorch to generate multi-output emulators
-Home-page: https://github.com/cwlanyon/GPyEm.git
-Download-URL: https://github.com/cwlanyon/GPyEm.git
-Author: Chris Lanyon
-Author-email: chris.lanyon@nottingham.ac.uk
-Keywords: gaussian process,emulator
