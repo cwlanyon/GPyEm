@@ -234,8 +234,8 @@ class ensemble():
         pred = self.predict_sample(inputVals,n)
         for i in range(n):
             R2_score[i,:]=(1-((pred[:,i,:]-outputVals)**2).mean(axis=0)/torch.var(outputVals,axis=0))             
-        R2_mean = torch.tensor(R2_score.mean(axis=0))
-        R2_std = torch.tensor(R2_score.std(axis=0))
+        R2_mean = R2_score.mean(axis=0)
+        R2_std = R2_score.std(axis=0)
         return R2_mean, R2_std
     
     def ISE(self,inputVals,outputVals):
