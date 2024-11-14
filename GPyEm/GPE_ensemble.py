@@ -5,7 +5,7 @@ import gpytorch
 import os
 from gpytorch.likelihoods import GaussianLikelihood
 class ensemble():
-    def __init__(self,X_train,y_train,mean_func='constant',training_iter=1000,kernel='RBF',kernel_params=None,ref_emulator=None,a=None,a_indicator=False):
+    def __init__(self,X_train,y_train,mean_func='constant',training_iter=1000,kernel='RBF',kernel_params=None,ref_emulator=None,a=None,a_indicator=False,train=True,save=False,load=False,save_loc=None):
 
 
         self.training_input = X_train
@@ -19,8 +19,14 @@ class ensemble():
         self.a_indicator=a_indicator
         self.kernel=kernel
         self.kernel_params=kernel_params
+        self.train=train
+        if load==True:
+            self.train=False
         self.models, self.likelihoods = self.create_ensemble()
-
+        if save==True:
+            self.save_emulator_state(save_loc)
+        if load==True:
+            self.load_emulator_state(save_loc)
         
         
     def normalise(self,data):
@@ -82,34 +88,35 @@ class ensemble():
                 models.append(GPF.ExactGPModel(X, Y, likelihoods[i],self.kernel,self.kernel_params,self.mean_func,self.ref_emulator.models[i],self.ref_emulator.likelihoods[i],self.a[i],self.a_indicator))
             else:
                 models.append(GPF.ExactGPModel(X, Y, likelihoods[i],self.kernel,self.kernel_params,self.mean_func,self.ref_emulator.models[i],self.ref_emulator.likelihoods[i],None,False))
+            if self.train==True:
+                smoke_test = ('CI' in os.environ)
+                training_iter = 2 if smoke_test else self.training_iter
 
-            smoke_test = ('CI' in os.environ)
-            training_iter = 2 if smoke_test else self.training_iter
-
-            # Find optimal model hyperparameters
-            models[i].train()
-            likelihoods[i].train()
-
-
-            # Use the adam optimizer
-            optimizer = torch.optim.Adam(models[i] .parameters(), lr=0.1)  # Includes GaussianLikelihood parameters
-
-            # "Loss" for GPs - the marginal log likelihood
-            mll = gpytorch.mlls.ExactMarginalLogLikelihood(likelihoods[i], models[i] )
+                # Find optimal model hyperparameters
+                models[i].train()
+                likelihoods[i].train()
 
 
-            for j in range(training_iter):
-                # Zero gradients from previous iteration
-                optimizer.zero_grad()
-                # Output from model
-                output = models[i](X)
-                # Calc loss and backprop gradients
-                loss = -mll(output, Y)
-                loss.backward()
-                # print('Iter %d/%d - Loss: %.3f' % (
-                #     j + 1, training_iter, loss.item()
-                # ))
-                optimizer.step()
+                # Use the adam optimizer
+                optimizer = torch.optim.Adam(models[i] .parameters(), lr=0.1)  # Includes GaussianLikelihood parameters
+
+                # "Loss" for GPs - the marginal log likelihood
+                mll = gpytorch.mlls.ExactMarginalLogLikelihood(likelihoods[i], models[i] )
+
+
+                for j in range(training_iter):
+                    # Zero gradients from previous iteration
+                    optimizer.zero_grad()
+                    # Output from model
+                    output = models[i](X)
+                    # Calc loss and backprop gradients
+                    loss = -mll(output, Y)
+                    loss.backward()
+                    # print('Iter %d/%d - Loss: %.3f' % (
+                    #     j + 1, training_iter, loss.item()
+                    # ))
+                    optimizer.step()
+                    
         return models, likelihoods
     
     
@@ -167,7 +174,19 @@ class ensemble():
                 #))
                 optimizer.step()
         return models, likelihoods
-
+    
+    
+    def save_emulator_state(self,save_loc):
+        dicts=[]
+        for model in self.models:
+            dicts.append(model.state_dict())
+        torch.save(dicts,save_loc)   
+        
+    def load_emulator_state(self,save_loc):
+        load = torch.load(save_loc)
+        for i,model in enumerate(self.models):
+            model.load_state_dict(load[i])    
+    
     def predict(self,inputVals):
 
         models=self.models
