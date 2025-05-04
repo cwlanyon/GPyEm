@@ -4,8 +4,9 @@ import torch
 import gpytorch
 import os
 from gpytorch.likelihoods import GaussianLikelihood
+
 class ensemble():
-    def __init__(self,X_train,y_train,mean_func='constant',training_iter=1000,kernel='RBF',kernel_params=None,ref_emulator=None,a=None,a_indicator=False,train=True,save=False,load=False,save_loc=None):
+    def __init__(self,X_train,y_train,mean_func='constant',training_iter=1000,kernel='RBF',kernel_params=None,n_restarts=0,X_test=None,y_test=None,ref_emulator=None,a=None,a_indicator=False,poly_degree=None,train=True,save=False,load=False,save_loc=None):
 
 
         self.training_input = X_train
@@ -20,9 +21,20 @@ class ensemble():
         self.kernel=kernel
         self.kernel_params=kernel_params
         self.train=train
-        if load==True:
+        self.poly_degree=poly_degree
+        
+        if load==True: #Do not train model if loading previous hyperparameters
             self.train=False
-        self.models, self.likelihoods = self.create_ensemble()
+        
+        if n_restarts==0:
+            self.models, self.likelihoods = self.create_ensemble()
+        else:
+            self.n_restarts=n_restarts
+            self.X_test=X_test
+            self.y_test=y_test
+            self.models, self.likelihoods = self.create_ensemble_restarts()
+            
+        
         if save==True:
             self.save_emulator_state(save_loc)
         if load==True:
@@ -55,7 +67,6 @@ class ensemble():
         modelInput = self.training_input_normalised
         modelOutput = self.training_output_normalised
         meanFunc = self.mean_func
-
         models = []
         likelihoods = []
         nMod = modelOutput.shape[1]
@@ -65,12 +76,13 @@ class ensemble():
         #noise_prior=gpytorch.priors.SmoothedBoxPrior(0.15, 1.5, sigma=0.001))
         
         for i in range(nMod):
+            norm_const=[self.training_input_mean, self.training_input_STD,self.training_input,self.training_output[:,i]]
             Y=modelOutput[:,i].float()
             print(i)
             likelihoods.append(gpytorch.likelihoods.GaussianLikelihood(noise_prior=gpytorch.priors.SmoothedBoxPrior(0.15, 1.5, sigma=0.1)))
             
             if self.ref_emulator == None:
-                models.append(GPF.ExactGPModel(X, Y, likelihoods[i],self.kernel,self.kernel_params,self.mean_func,None,None,None,False))
+                models.append(GPF.ExactGPModel(X, Y, likelihoods[i],self.kernel,self.kernel_params,self.mean_func,None,None,None,False,self.poly_degree,norm_const))
             elif self.mean_func == 'discrepancy_cohort':
                 ref_models = []
                 ref_likelihoods = []
@@ -78,16 +90,16 @@ class ensemble():
                     ref_models.append(self.ref_emulator[k].models[i])
                     ref_likelihoods.append(self.ref_emulator[k].likelihoods[i])
                 if self.a==None:
-                    models.append(GPF.ExactGPModel(X, Y, likelihoods[i],self.kernel,self.kernel_params,self.mean_func,ref_models,ref_likelihoods,None,False))
+                    models.append(GPF.ExactGPModel(X, Y, likelihoods[i],self.kernel,self.kernel_params,self.mean_func,ref_models,ref_likelihoods,None,False,self.poly_degree,norm_const))
 
                 else:
-                    models.append(GPF.ExactGPModel(X, Y, likelihoods[i],self.kernel,self.kernel_params,self.mean_func,ref_models,ref_likelihoods,self.a[i,:],self.a_indicator))
+                    models.append(GPF.ExactGPModel(X, Y, likelihoods[i],self.kernel,self.kernel_params,self.mean_func,ref_models,ref_likelihoods,self.a[i,:],self.a_indicator,self.poly_degree,norm_const))
 
             elif self.a!=None:    
                 
-                models.append(GPF.ExactGPModel(X, Y, likelihoods[i],self.kernel,self.kernel_params,self.mean_func,self.ref_emulator.models[i],self.ref_emulator.likelihoods[i],self.a[i],self.a_indicator))
+                models.append(GPF.ExactGPModel(X, Y, likelihoods[i],self.kernel,self.kernel_params,self.mean_func,self.ref_emulator.models[i],self.ref_emulator.likelihoods[i],self.a[i],self.a_indicator,self.poly_degree,norm_const))
             else:
-                models.append(GPF.ExactGPModel(X, Y, likelihoods[i],self.kernel,self.kernel_params,self.mean_func,self.ref_emulator.models[i],self.ref_emulator.likelihoods[i],None,False))
+                models.append(GPF.ExactGPModel(X, Y, likelihoods[i],self.kernel,self.kernel_params,self.mean_func,self.ref_emulator.models[i],self.ref_emulator.likelihoods[i],None,False,self.poly_degree,norm_const))
             if self.train==True:
                 smoke_test = ('CI' in os.environ)
                 training_iter = 2 if smoke_test else self.training_iter
@@ -121,61 +133,30 @@ class ensemble():
     
     
     def create_ensemble_restarts(self):
-        modelInput = self.training_input_normalised
-        modelOutput = self.training_output_normalised
-        meanFunc = self.mean_func
+        test_models=[]
+        test_likelihoods=[]
         
-        X_val_norm,y_val_norm=self.normalise_test_data(self.X_val,self.y_val)
+        best_models=[]
+        best_likelihoods=[]
         
-
-        models = []
-        likelihoods = []
-        nMod = modelOutput.shape[1]
-        #nDim = modelOutput.shape[1]
-        X=torch.tensor(modelInput.values).float()
-
-        for i in range(nMod):
-            Y=torch.tensor(modelOutput.iloc[:,i].values).squeeze().float() 
-            print(i)
-            likelihoods.append(gpytorch.likelihoods.GaussianLikelihood())
-            if meanFunc=='constant':
-                models.append(GPF.ExactGPModel(X, Y, likelihoods[i]))
-            if meanFunc=='linear':
-                models.append(GPF.ExactLRGPModel(X, Y, likelihoods[i]))
-            if meanFunc=='zero':
-                models.append(GPF.ZeroMeanGPModel(X, Y, likelihoods[i]))
-            smoke_test = ('CI' in os.environ)
-            training_iter = 2 if smoke_test else self.training_iter
-
-            # Find optimal model hyperparameters
-            models[i].train()
-            likelihoods[i].train()
-
-
-            # Use the adam optimizer
-            optimizer = torch.optim.Adam(models[i] .parameters(), lr=0.1)  # Includes GaussianLikelihood parameters
-
-            # "Loss" for GPs - the marginal log likelihood
-            mll = gpytorch.mlls.ExactMarginalLogLikelihood(likelihoods[i], models[i] )
-
-
-            for j in range(training_iter):
-                # Zero gradients from previous iteration
-                optimizer.zero_grad()
-                # Output from model
-                output = models[i](X)
-                # Calc loss and backprop gradients
-                loss = -mll(output, Y)
-                loss.backward()
-                #print('Iter %d/%d - Loss: %.3f   lengthscale: %.3f   noise: %.3f' % (
-                #    j + 1, training_iter, loss.item(),
-                #    models[i].covar_module.base_kernel.lengthscale.item(),
-                #    models[i].likelihood.noise.item()
-                #))
-                optimizer.step()
-        return models, likelihoods
-    
-    
+        R2_vec=torch.zeros(self.n_restarts,self.y_test.shape[1])
+        for i in range(self.n_restarts):
+            
+            self.models, self.likelihoods = self.create_ensemble()
+            test_models.append(self.models)
+            test_likelihoods.append(self.likelihoods)
+            R2_vec[i]=self.R2(self.X_test,self.y_test)
+        print(R2_vec)
+        
+        best = torch.argmax(R2_vec,axis=0)
+        
+        print(best)
+        for j in range(self.y_test.shape[1]):
+            best_models.append(test_models[best[j]][j])
+            best_likelihoods.append(test_likelihoods[best[j]][j])
+        
+        return best_models, best_likelihoods
+            
     def save_emulator_state(self,save_loc):
         dicts=[]
         for model in self.models:
