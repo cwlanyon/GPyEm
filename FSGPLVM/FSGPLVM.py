@@ -127,11 +127,12 @@ class LVE():
             XL = torch.cat((X,torch.repeat_interleave(L,self.p,dim=0)),axis=1)
             
             if i%1000 ==0:
-                print(objective)
+                print('Progress:',f"{i/iters:.0%}",'- Cost:', objective.detach().numpy(),end='\x1b[1K\r')
 
         #self.L = L
         #self.scale = scaling
         #self.lengthscale = lengthscale
+        print('Progress:',f"{i/iters:.0%}",'- Cost:', objective.detach().numpy(),end='\x1b[1K\r')
         self.XL = XL    
         return  
 
@@ -174,12 +175,12 @@ class LVE():
         c+=self.multivariate_ll(XL_new[:,self.L_dim:],0,torch.eye(XL_new.shape[0]))
         return -c
 
-    def cutting_feedback(self,XL_new,Y_new,iters,lr):
+    def cutting_feedback(self,XL_new,Y_new,p_new,iters,lr):
         
         L_new = torch.unique(XL_new[:,self.L_dim:],sorted=False,dim=0).clone().detach().requires_grad_(True)
         X_new = self.normalise_input(XL_new[:,:self.L_dim]).detach().clone()
         Y_new = self.normalise_output(Y_new).detach().clone()
-        XL_new = torch.cat((X_new,torch.repeat_interleave(L_new,X_new.shape[0],dim=0)),axis=1)             
+        XL_new = torch.cat((X_new,torch.repeat_interleave(L_new,p_new,dim=0)),axis=1)             
         gd = torch.optim.Adam([L_new], lr=self.lr)
         for i in range(iters):
             
@@ -188,9 +189,9 @@ class LVE():
             objective.backward()
             gd.step()
 
-            XL_new = torch.cat((X_new,torch.repeat_interleave(L_new,X_new.shape[0],dim=0)),axis=1)
+            XL_new = torch.cat((X_new,torch.repeat_interleave(L_new,p_new,dim=0)),axis=1)
             
             if i%1000 ==0:
-                print(objective)
-  
+                print('Progress:',f"{i/iters:.0%}",'- Cost:', objective.detach().numpy(),end='\x1b[1K\r')
+        print('Progress:',f"{i/iters:.0%}",'- Cost:', objective.detach().numpy(),end='\x1b[1K\r')
         return L_new
